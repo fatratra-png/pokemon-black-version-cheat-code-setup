@@ -26,8 +26,32 @@ starters, Eeveelutions, and utility codes.
 | **900 Master Balls** | `L+R` | 900 Master Balls in item slot 1 |
 | **900 Rare Candies** | `L+R` | 900 Rare Candies in recovery pouch |
 | **Complete Pokedex** | Hold `SELECT` | All 649 Pokemon seen & caught |
+| **Shiny Wild Encounters** | Hold `L` on / release `L` off | All wild encounters are shiny |
 
 ---
+
+## Save Injector (`inject_legendaries.py`)
+
+> Populates PC boxes with real Pokemon (not just Pokedex flags).
+
+| Flag | Effect |
+|------|--------|
+| *(no flags)* | Injects ~60 legendaries/pseudos/starters |
+| `--all` | Injects **all 649 species** into PC boxes |
+| `--shiny` | All injected Pokemon are **shiny** (star sparkle) |
+| `--pokedex` | Also fills all Pokedex seen/caught flags |
+
+**To fill your PC with all 649 shiny Pokemon and complete the Pokedex:**
+
+```bash
+python inject_legendaries.py --all --shiny --pokedex
+```
+
+The script auto-detects your save file at `~/Emulator/Pokemon - Black Version.../`. You can also pass a custom path:
+
+```bash
+python inject_legendaries.py /path/to/your/save.sav --all --shiny --pokedex
+```
 
 ## Encounter Codes (hold `SELECT` in grass)
 

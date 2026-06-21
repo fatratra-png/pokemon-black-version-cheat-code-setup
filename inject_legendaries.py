@@ -1,19 +1,33 @@
 #!/usr/bin/env python3
 """
 Pokemon Black Save Injector
-Injects legendary Pokemon directly into PC boxes of a Gen 5 save file.
-The save file is modified in-place.
+Injects Pokemon directly into PC boxes and fills Pokedex.
+Supports:
+  - Legendary Pokemon (original behavior)
+  - ALL 649 species (--all flag)
+  - Shiny Pokemon (--shiny flag)
+  - Pokedex completion (--pokedex flag)
+
+Usage:
+  python inject_legendaries.py                    # inject legendaries only
+  python inject_legendaries.py --all              # inject all 649 species
+  python inject_legendaries.py --all --shiny      # all 649, shiny
+  python inject_legendaries.py --all --pokedex    # all 649 + fill pokedex
+  python inject_legendaries.py --pokedex          # just fill pokedex, no pokemon
+  python inject_legendaries.py /path/to/save.sav  # custom save path
 """
 
 import struct
 import random
 import os
 import sys
+import argparse
 
 # Gen 4/5 PKM encryption constants
 BLOCK_SIZE = 32
+LCRNG_MULT = 0x41C64E6D
+LCRNG_ADD = 0x6073
 
-# Shuffle inverse tables: for each sv (0-23), maps encrypted block position -> decrypted block position
 INVERSE_TABLE = {
     0:  [0, 1, 2, 3], 1:  [0, 1, 3, 2], 2:  [0, 2, 1, 3],
     3:  [0, 3, 1, 2], 4:  [0, 2, 3, 1], 5:  [0, 3, 2, 1],
@@ -28,9 +42,6 @@ INVERSE_TABLE = {
 ORDER_TABLE = {}
 for sv, inv in INVERSE_TABLE.items():
     ORDER_TABLE[sv] = [inv.index(i) for i in range(4)]
-
-LCRNG_MULT = 0x41C64E6D
-LCRNG_ADD = 0x6073
 
 def decrypt_stored(raw_136):
     pid = struct.unpack_from('<I', raw_136, 0)[0]
@@ -78,7 +89,6 @@ def calc_checksum(plain_136):
         total += struct.unpack_from('<H', plain_136, i)[0]
     return total & 0xFFFF
 
-# Nature table
 NATURES = [
     "Hardy", "Lonely", "Brave", "Adamant", "Naughty",
     "Bold", "Docile", "Relaxed", "Impish", "Lax",
@@ -87,524 +97,61 @@ NATURES = [
     "Calm", "Gentle", "Sassy", "Careful", "Quirky"
 ]
 
-# Move PP values (for moves we commonly use)
 MOVE_PP = {
-    0: 0,  # empty
-    # Fighting
-    1: 35,   # Pound
-    2: 25,   # Karate Chop
-    # Normal
-    33: 35,  # Tackle
-    34: 20,  # Body Slam
-    35: 15,  # Wrap
-    36: 20,  # Take Down
-    38: 30,  # Double-Edge
-    39: 40,  # Tail Whip
-    40: 40,  # Leer
-    41: 35,  # Bite
-    42: 35,  # Growl
-    43: 30,  # Roar
-    44: 20,  # Sing
-    45: 30,  # Supersonic
-    46: 15,  # Sonic Boom
-    47: 15,  # Disable
-    48: 20,  # Acid
-    49: 15,  # Ember
-    53: 25,  # Flamethrower
-    57: 5,   # Surf
-    58: 5,   # Ice Beam
-    59: 5,   # Blizzard
-    61: 10,  # Bubble Beam
-    62: 5,   # Aurora Beam
-    63: 20,  # Hyper Beam
-    64: 35,  # Peck
-    65: 35,  # Drill Peck
-    66: 20,  # Submission
-    67: 25,  # Low Kick
-    68: 20,  # Counter
-    69: 15,  # Seismic Toss
-    70: 20,  # Strength
-    71: 15,  # Absorb
-    72: 25,  # Mega Drain
-    73: 10,  # Leech Seed
-    74: 20,  # Growth
-    75: 35,  # Razor Leaf
-    76: 10,  # Solar Beam
-    77: 10,  # Poisonpowder
-    78: 15,  # Stun Spore
-    79: 15,  # Sleep Powder
-    80: 40,  # Petal Dance
-    81: 10,  # String Shot
-    82: 20,  # Dragon Rage
-    83: 20,  # Fire Spin
-    84: 15,  # Thunder Shock
-    85: 15,  # Thunderbolt
-    86: 10,  # Thunder Wave
-    87: 10,  # Thunder
-    88: 15,  # Rock Throw
-    89: 10,  # Earthquake
-    90: 15,  # Fissure
-    91: 10,  # Dig
-    92: 15,  # Toxic
-    93: 25,  # Confusion
-    94: 20,  # Psychic
-    95: 20,  # Hypnosis
-    96: 30,  # Meditate
-    97: 30,  # Agility
-    98: 20,  # Quick Attack
-    99: 20,  # Rage
-    100: 5,  # Teleport
-    102: 15, # Mimic
-    103: 10, # Screech
-    104: 30, # Double Team
-    105: 15, # Recover
-    106: 5,  # Harden
-    107: 30, # Minimize
-    108: 10, # Smokescreen
-    109: 5,  # Confuse Ray
-    110: 5,  # Withdraw
-    111: 40, # Defense Curl
-    112: 10, # Barrier
-    113: 10, # Light Screen
-    114: 30, # Haze
-    115: 40, # Reflect
-    116: 20, # Focus Energy
-    117: 20, # Bide
-    118: 20, # Metronome
-    119: 10, # Mirror Move
-    120: 10, # Self-Destruct
-    121: 15, # Egg Bomb
-    122: 20, # Lick
-    123: 20, # Smog
-    124: 15, # Sludge
-    125: 10, # Bone Club
-    126: 20, # Fire Blast
-    127: 10, # Waterfall
-    129: 15, # Swift
-    130: 20, # Sky Attack
-    132: 15, # Constrict
-    133: 25, # Amnesia
-    134: 20, # Kinesis
-    135: 15, # Soft-Boiled
-    137: 5,  # Glare
-    138: 10, # Dream Eater
-    139: 10, # Poison Gas
-    140: 30, # Barrage
-    141: 20, # Leech Life
-    142: 30, # Lovely Kiss
-    143: 10, # Sky Attack
-    144: 30, # Transform
-    145: 10, # Bubble
-    146: 20, # Dizzy Punch
-    147: 10, # Spore
-    148: 30, # Flash
-    149: 40, # Psybeam
-    150: 20, # Jump Kick
-    151: 20, # Hi Jump Kick
-    152: 20, # Rollout
-    153: 20, # Swords Dance
-    154: 5,  # Cut
-    155: 30, # Gust
-    156: 15, # Wing Attack
-    157: 5,  # Whirlwind
-    158: 35, # Fly
-    159: 5,  # Bind
-    160: 20, # Slam
-    161: 30, # Vine Whip
-    162: 10, # Stomp
-    163: 30, # Double Kick
-    164: 25, # Mega Kick
-    165: 20, # Jump Kick
-    166: 10, # Rolling Kick
-    168: 20, # Headbutt
-    169: 15, # Horn Attack
-    170: 10, # Fury Attack
-    171: 5,  # Horn Drill
-    172: 35, # Tackle (again)
-    173: 35, # Poison Sting
-    174: 20, # Twineedle
-    175: 15, # Pin Missile
-    176: 30, # Leer
-    177: 30, # Bite
-    178: 35, # Growl
-    179: 30, # Roar
-    180: 20, # Sing
-    181: 20, # Peck
-    182: 35, # Drill Peck
-    183: 20, # Fury Strike
-    184: 10, # Submission
-    185: 15, # Low Kick
-    187: 30, # Absorb
-    188: 20, # Mega Drain
-    189: 10, # Leech Seed
-    190: 25, # Razor Leaf
-    200: 35, # Fury Cutter
-    207: 30, # Slash
-    208: 15, # X-Scissor
-    # special moves we'll use
-    237: 30, # Hidden Power
-    240: 30, # Protect
-    241: 10, # Mach Punch
-    242: 30, # Scary Face
-    244: 30, # Feint Attack
-    249: 10, # Outrage
-    250: 5,  # Sandstorm
-    262: 10, # Superpower
-    263: 15, # Endeavor
-    272: 10, # Close Combat
-    275: 5,  # Thunder Fang
-    276: 10, # Ice Fang
-    277: 15, # Fire Fang
-    278: 15, # Shadow Ball
-    288: 15, # Hyper Voice
-    290: 30, # DragonBreath
-    291: 5,  # Dragon Claw
-    292: 10, # Dragon Dance
-    293: 10, # Dragon Pulse
-    296: 5,  # Aura Sphere
-    297: 5,  # Dark Pulse
-    298: 20, # Air Slash
-    299: 5,  # Brave Bird
-    300: 20, # Bug Buzz
-    302: 15, # Energy Ball
-    303: 20, # Earth Power
-    304: 20, # Giga Impact
-    311: 10, # Nasty Plot
-    313: 15, # Seed Bomb
-    329: 5,  # Spacial Rend
-    330: 5,  # Roar of Time
-    331: 10, # Shadow Force
-    332: 10, # Draco Meteor
-    333: 5,  # Bullet Seed
-    334: 10, # Stone Edge
-    338: 5,  # Magma Storm
-    340: 5,  # Dark Void
-    342: 5,  # Seed Flare
-    343: 10, # Ominous Wind
-    344: 5,  # Shadow Sneak
-    348: 20, # Water Pulse
-    349: 10, # Doom Desire
-    350: 5,  # Psycho Boost
-    352: 10, # Power Gem
-    354: 10, # Night Slash
-    355: 10, # Air Cutter
-    357: 10, # Aqua Tail
-    358: 15, # Seed Bomb (again)
-    359: 20, # Air Slash (again)
-    360: 20, # X-Scissor (again)
-    363: 10, # Attack Order
-    364: 10, # Defend Order
-    365: 10, # Heal Order
-    366: 10, # Head Smash
-    367: 5,  # Double Hit
-    368: 10, # Roar of Time (again)
-    369: 5,  # Spacial Rend (again)
-    370: 5,  # Lunar Dance
-    371: 5,  # Crush Grip
-    372: 10, # Magma Storm (again)
-    373: 5,  # Dark Void (again)
-    374: 5,  # Seed Flare (again)
-    375: 5,  # Ominous Wind (again)
-    376: 10, # Shadow Force (again)
-    377: 5,  # Trick Room
-    378: 5,  # Draco Meteor
-    379: 20, # Discharge
-    380: 30, # Lava Plume
-    381: 10, # Leaf Storm
-    382: 20, # Power Whip
-    383: 20, # Rock Wrecker
-    384: 5,  # Cross Poison
-    385: 15, # Gunk Shot
-    386: 10, # Iron Head
-    387: 10, # Magnet Bomb
-    388: 15, # Stone Edge (again)
-    389: 5,  # Captivate
-    390: 15, # Stealth Rock
-    391: 20, # Grass Knot
-    392: 15, # Chatter
-    393: 10, # Judgment
-    394: 5,  # Bug Bite
-    395: 15, # Charge Beam
-    396: 20, # Wood Hammer
-    397: 15, # Aqua Jet
-    398: 15, # Attack Order (again)
-    399: 15, # Defend Order (again)
-    400: 10, # Heal Order (again)
-    401: 10, # Head Smash (again)
-    402: 5,  # Double Hit (again)
-    403: 5,  # Roar of Time
-    404: 5,  # Spacial Rend
-    405: 5,  # Lunar Dance
-    406: 5,  # Crush Grip
-    407: 10, # Magma Storm
-    408: 10, # Dark Void
-    409: 5,  # Seed Flare
-    410: 10, # Ominous Wind
-    411: 10, # Shadow Force
-    412: 5,  # Hone Claws
-    413: 20, # Wide Guard
-    414: 10, # Guard Split
-    415: 10, # Power Split
-    416: 10, # Wonder Room
-    417: 10, # Psyshock
-    418: 20, # Venoshock
-    419: 10, # Autotomize
-    420: 10, # Rage Powder
-    421: 10, # Telekinesis
-    422: 10, # Magic Room
-    423: 15, # Smack Down
-    424: 15, # Storm Throw
-    425: 15, # Flame Burst
-    426: 15, # Sludge Wave
-    427: 20, # Quiver Dance
-    428: 20, # Heavy Slam
-    429: 20, # Synchronoise
-    430: 15, # Electro Ball
-    431: 15, # Soak
-    432: 20, # Flame Charge
-    433: 15, # Low Sweep
-    434: 15, # Acid Spray
-    435: 20, # Foul Play
-    436: 10, # Simple Beam
-    437: 15, # Round
-    438: 15, # Echoed Voice
-    439: 10, # Chip Away
-    440: 15, # Clear Smog
-    441: 10, # Stored Power
-    442: 20, # Quick Guard
-    443: 10, # Ally Switch
-    444: 15, # Scald
-    445: 15, # Shell Smash
-    446: 20, # Heal Pulse
-    447: 10, # Hex
-    448: 15, # Sky Drop
-    449: 20, # Shift Gear
-    450: 10, # Circle Throw
-    451: 20, # Incinerate
-    452: 15, # Quash
-    453: 10, # Acrobatics
-    454: 20, # Reflect Type
-    455: 10, # Retaliate
-    456: 15, # Final Gambit
-    457: 15, # Bestow
-    458: 20, # Inferno
-    459: 10, # Water Pledge
-    460: 10, # Fire Pledge
-    461: 10, # Grass Pledge
-    462: 5,  # Volt Switch
-    463: 15, # Bulldoze
-    464: 10, # Frost Breath
-    465: 15, # Dragon Tail
-    466: 5,  # Work Up
-    467: 10, # Electroweb
-    468: 30, # Wild Charge
-    469: 5,  # Drill Run
-    470: 10, # Dual Chop
-    471: 20, # Heart Stamp
-    472: 15, # Horn Leech
-    473: 10, # Sacred Sword
-    474: 15, # Razor Shell
-    475: 10, # Heat Crash
-    476: 15, # Leaf Tornado
-    477: 25, # Steamroller
-    478: 20, # Cotton Guard
-    479: 10, # Night Daze
-    480: 15, # Psyshock (duplicate)
-    481: 10, # Tail Slap
-    482: 10, # Hurricane
-    483: 20, # Head Charge
-    484: 15, # Gear Grind
-    485: 5,  # Searing Shot
-    486: 5,  # Techno Blast
-    487: 5,  # Relic Song
-    488: 5,  # Secret Sword
-    489: 5,  # Glaciate
-    490: 5,  # Bolt Strike
-    491: 5,  # Blue Flare
-    492: 5,  # Fiery Dance
-    493: 5,  # Freeze Shock
-    494: 5,  # Ice Burn
-    495: 5,  # Snarl
-    496: 15, # Icicle Crash
-    497: 5,  # V-create
-    498: 10, # Fusion Flare
-    499: 10, # Fusion Bolt
-    500: 20, # Flying Press
+    0: 0, 1: 35, 2: 25, 33: 35, 34: 20, 35: 15, 36: 20,
+    38: 30, 39: 40, 40: 40, 41: 35, 42: 35, 43: 30, 44: 20,
+    45: 30, 46: 15, 47: 15, 48: 20, 49: 15, 53: 25, 57: 5,
+    58: 5, 59: 5, 61: 10, 62: 5, 63: 20, 64: 35, 65: 35,
+    66: 20, 67: 25, 68: 20, 69: 15, 70: 20, 71: 15, 72: 25,
+    73: 10, 74: 20, 75: 35, 76: 10, 77: 10, 78: 15, 79: 15,
+    80: 40, 81: 10, 82: 20, 83: 20, 84: 15, 85: 15, 86: 10,
+    87: 10, 88: 15, 89: 10, 90: 15, 91: 10, 92: 15, 93: 25,
+    94: 20, 95: 20, 96: 30, 97: 30, 98: 20, 99: 20, 100: 5,
+    102: 15, 103: 10, 104: 30, 105: 15, 106: 5, 107: 30, 108: 10,
+    109: 5, 110: 5, 111: 40, 112: 10, 113: 10, 114: 30, 115: 40,
+    116: 20, 117: 20, 118: 20, 119: 10, 120: 10, 121: 15, 122: 20,
+    123: 20, 124: 15, 125: 10, 126: 20, 127: 10, 129: 15, 130: 20,
+    132: 15, 133: 25, 134: 20, 135: 15, 137: 5, 138: 10, 139: 10,
+    140: 30, 141: 20, 142: 30, 143: 10, 144: 30, 145: 10, 146: 20,
+    147: 10, 148: 30, 149: 40, 150: 20, 151: 20, 152: 20, 153: 20,
+    154: 5, 155: 30, 156: 15, 157: 5, 158: 35, 159: 5, 160: 20,
+    161: 30, 162: 10, 163: 30, 164: 25, 165: 20, 166: 10, 168: 20,
+    169: 15, 170: 10, 171: 5, 172: 35, 173: 35, 174: 20, 175: 15,
+    176: 30, 177: 30, 178: 35, 179: 30, 180: 20, 181: 20, 182: 35,
+    183: 20, 184: 10, 185: 15, 187: 30, 188: 20, 189: 10, 190: 25,
+    200: 35, 207: 30, 208: 15, 237: 30, 240: 30, 241: 10, 242: 30,
+    244: 30, 249: 10, 250: 5, 262: 10, 263: 15, 272: 10, 275: 5,
+    276: 10, 277: 15, 278: 15, 288: 15, 290: 30, 291: 5, 292: 10,
+    293: 10, 296: 5, 297: 5, 298: 20, 299: 5, 300: 20, 302: 15,
+    303: 20, 304: 20, 311: 10, 313: 15, 329: 5, 330: 5, 331: 10,
+    332: 10, 333: 5, 334: 10, 338: 5, 340: 5, 342: 5, 343: 10,
+    344: 5, 348: 20, 349: 10, 350: 5, 352: 10, 354: 10, 355: 10,
+    357: 10, 358: 15, 359: 20, 360: 20, 363: 10, 364: 10, 365: 10,
+    366: 10, 367: 5, 368: 10, 369: 5, 370: 5, 371: 5, 372: 10,
+    373: 5, 374: 5, 375: 5, 376: 10, 377: 5, 378: 5, 379: 20,
+    380: 30, 381: 10, 382: 20, 383: 20, 384: 5, 385: 15, 386: 10,
+    387: 10, 388: 15, 389: 5, 390: 15, 391: 20, 392: 15, 393: 10,
+    394: 5, 395: 15, 396: 20, 397: 15, 398: 15, 399: 15, 400: 10,
+    401: 10, 402: 5, 403: 5, 404: 5, 405: 5, 406: 5, 407: 10,
+    408: 10, 409: 5, 410: 10, 411: 10, 412: 5, 413: 20, 414: 10,
+    415: 10, 416: 10, 417: 10, 418: 20, 419: 10, 420: 10, 421: 10,
+    422: 10, 423: 15, 424: 15, 425: 15, 426: 15, 427: 20, 428: 20,
+    429: 20, 430: 15, 431: 15, 432: 20, 433: 15, 434: 15, 435: 20,
+    436: 10, 437: 15, 438: 15, 439: 10, 440: 15, 441: 10, 442: 20,
+    443: 10, 444: 15, 445: 15, 446: 20, 447: 10, 448: 15, 449: 20,
+    450: 10, 451: 20, 452: 15, 453: 10, 454: 20, 455: 10, 456: 15,
+    457: 15, 458: 20, 459: 10, 460: 10, 461: 10, 462: 5, 463: 15,
+    464: 10, 465: 15, 466: 5, 467: 10, 468: 30, 469: 5, 470: 10,
+    471: 20, 472: 15, 473: 10, 474: 15, 475: 10, 476: 15, 477: 25,
+    478: 20, 479: 10, 480: 15, 481: 10, 482: 10, 483: 20, 484: 15,
+    485: 5, 486: 5, 487: 5, 488: 5, 489: 5, 490: 5, 491: 5,
+    492: 5, 493: 5, 494: 5, 495: 5, 496: 15, 497: 5, 498: 10,
+    499: 10, 500: 20,
 }
-
-# Some move PP values that we need
-MOVE_PP.update({
-    1: 35,    # Pound
-    2: 25,    # Karate Chop
-    3: 10,    # Double Slap
-    4: 15,    # Comet Punch
-    5: 25,    # Mega Punch
-    6: 20,    # Pay Day
-    7: 15,    # Fire Punch
-    8: 15,    # Ice Punch
-    9: 15,    # Thunder Punch
-    10: 35,   # Scratch
-    11: 30,   # Vice Grip
-    12: 5,    # Guillotine
-    13: 25,   # Razor Wind
-    14: 10,   # Swords Dance
-    15: 20,   # Cut
-    16: 35,   # Gust
-    17: 25,   # Wing Attack
-    18: 20,   # Whirlwind
-    19: 15,   # Fly
-    20: 20,   # Bind
-    21: 20,   # Slam
-    22: 10,   # Vine Whip
-    23: 20,   # Stomp
-    24: 30,   # Double Kick
-    25: 15,   # Mega Kick
-    26: 20,   # Jump Kick
-    27: 25,   # Rolling Kick
-    28: 15,   # Sand Attack
-    29: 35,   # Headbutt
-    30: 25,   # Horn Attack
-    31: 20,   # Fury Attack
-    32: 5,    # Horn Drill
-    33: 35,   # Tackle
-    34: 20,   # Body Slam
-    35: 20,   # Wrap
-    36: 20,   # Take Down
-    37: 10,   # Thrash
-    38: 15,   # Double-Edge
-    39: 30,   # Tail Whip
-    40: 30,   # Poison Sting
-    41: 35,   # Twineedle
-    42: 15,   # Pin Missile
-    43: 30,   # Leer
-    44: 25,   # Bite
-    45: 40,   # Growl
-    46: 20,   # Roar
-    47: 15,   # Sing
-    48: 20,   # Supersonic
-    49: 20,   # Sonic Boom
-    50: 15,   # Disable
-    51: 30,   # Acid
-    52: 25,   # Ember
-    53: 15,   # Flamethrower
-    54: 15,   # Mist
-    55: 25,   # Water Gun
-    56: 20,   # Hydro Pump
-    57: 15,   # Surf
-    58: 10,   # Ice Beam
-    59: 5,    # Blizzard
-    60: 20,   # Psybeam
-    61: 20,   # Bubble Beam
-    62: 20,   # Aurora Beam
-    63: 5,    # Hyper Beam
-    64: 35,   # Peck
-    65: 20,   # Drill Peck
-    66: 25,   # Submission
-    67: 20,   # Low Kick
-    68: 20,   # Counter
-    69: 20,   # Seismic Toss
-    70: 15,   # Strength
-    71: 25,   # Absorb
-    72: 15,   # Mega Drain
-    73: 10,   # Leech Seed
-    74: 40,   # Growth
-    75: 25,   # Razor Leaf
-    76: 10,   # Solar Beam
-    77: 35,   # Poisonpowder
-    78: 30,   # Stun Spore
-    79: 15,   # Sleep Powder
-    80: 20,   # Petal Dance
-    81: 40,   # String Shot
-    82: 10,   # Dragon Rage
-    83: 15,   # Fire Spin
-    84: 20,   # Thunder Shock
-    85: 15,   # Thunderbolt
-    86: 20,   # Thunder Wave
-    87: 10,   # Thunder
-    88: 15,   # Rock Throw
-    89: 10,   # Earthquake
-    90: 5,    # Fissure
-    91: 10,   # Dig
-    92: 10,   # Toxic
-    93: 25,   # Confusion
-    94: 10,   # Psychic
-    95: 20,   # Hypnosis
-    96: 40,   # Meditate
-    97: 30,   # Agility
-    98: 30,   # Quick Attack
-    99: 20,   # Rage
-    100: 20,  # Teleport
-    101: 20,  # Night Shade
-    102: 10,  # Mimic
-    103: 40,  # Screech
-    104: 15,  # Double Team
-    105: 10,  # Recover
-    106: 30,  # Harden
-    107: 20,  # Minimize
-    108: 20,  # Smokescreen
-    109: 10,  # Confuse Ray
-    110: 30,  # Withdraw
-    111: 40,  # Defense Curl
-    112: 20,  # Barrier
-    113: 30,  # Light Screen
-    114: 30,  # Haze
-    115: 20,  # Reflect
-    116: 30,  # Focus Energy
-    117: 10,  # Bide
-    118: 10,  # Metronome
-    119: 20,  # Mirror Move
-    120: 5,   # Self-Destruct
-    121: 10,  # Egg Bomb
-    122: 30,  # Lick
-    123: 20,  # Smog
-    124: 20,  # Sludge
-    125: 20,  # Bone Club
-    126: 5,   # Fire Blast
-    127: 15,  # Waterfall
-    128: 5,   # Clamp
-    129: 20,  # Swift
-    130: 5,   # Sky Attack
-    131: 15,  # Fire Spin (again)
-    132: 20,  # Constrict
-    133: 20,  # Amnesia
-    134: 15,  # Kinesis
-    135: 10,  # Soft-Boiled
-    136: 25,  # Hi Jump Kick
-    137: 30,  # Glare
-    138: 15,  # Dream Eater
-    139: 40,  # Poison Gas
-    140: 20,  # Barrage
-    141: 10,  # Leech Life
-    142: 10,  # Lovely Kiss
-    143: 5,   # Sky Attack (again)
-    144: 10,  # Transform
-    145: 30,  # Bubble
-    146: 10,  # Dizzy Punch
-    147: 15,  # Spore
-    148: 20,  # Flash
-    149: 30,  # Psybeam
-    150: 10,  # Jump Kick
-    151: 10,  # Hi Jump Kick (again)
-})
 
 def get_pp(move_id):
-    """Return PP for a move ID (or 40 if unknown)"""
     return MOVE_PP.get(move_id, 40)
 
-# EXP for level 100 for each growth rate
-# These are the total EXP needed to reach level 100
-GROWTH_RATES = {
-    "erratic": 600000,
-    "fast": 800000,
-    "medium_fast": 1000000,
-    "medium_slow": 1059860,
-    "slow": 1250000,
-    "fluctuating": 1640000,
-}
-
-# EXP for level 100 in Standard (Medium Fast) = 1,000,000
-# Most legendaries use Medium Fast or Slow growth
-# Let's map species to growth rate
 EXP_AT_100 = {
     "medium_fast": 1000000,
     "slow": 1250000,
@@ -614,185 +161,209 @@ EXP_AT_100 = {
     "fluctuating": 1640000,
 }
 
-# Legendary Pokemon species data
-# Format: (species_id, name, type1, type2, growth_rate, move_ids)
-LEGENDARIES = [
-    # Kanto
-    (144, "Articuno", "Ice", "Flying", "slow", [58, 155, 130, 47]),  # Ice Beam, Gust, Sky Attack, Sing
-    (145, "Zapdos", "Electric", "Flying", "slow", [85, 155, 130, 84]),  # Thunderbolt, Gust, Sky Attack, Thunder Shock
-    (146, "Moltres", "Fire", "Flying", "slow", [53, 155, 130, 52]),  # Flamethrower, Gust, Sky Attack, Ember
-    (150, "Mewtwo", "Psychic", None, "slow", [94, 60, 65, 149]),  # Psychic, Psybeam, Drill Peck(?), Recover
-    (151, "Mew", "Psychic", None, "medium_slow", [94, 60, 65, 149]),  # Psychic, Psybeam, Recover, Transform
-    
-    # Johto
-    (243, "Raikou", "Electric", None, "slow", [85, 97, 84, 86]),  # Thunderbolt, Agility, Thunder Shock, Thunder Wave
-    (244, "Entei", "Fire", None, "slow", [53, 126, 97, 52]),  # Flamethrower, Fire Blast, Agility, Ember
-    (245, "Suicune", "Water", None, "slow", [57, 58, 48, 55]),  # Surf, Ice Beam, Supersonic, Water Gun
-    (249, "Lugia", "Psychic", "Flying", "slow", [94, 58, 97, 155]),  # Psychic, Ice Beam, Agility, Gust
-    (250, "Ho-Oh", "Fire", "Flying", "slow", [126, 53, 130, 155]),  # Fire Blast, Flamethrower, Sky Attack, Gust
-    
-    # Hoenn
-    (377, "Regirock", "Rock", None, "slow", [88, 89, 106, 110]),  # Rock Throw, Earthquake, Harden, Withdraw
-    (378, "Regice", "Ice", None, "slow", [58, 59, 106, 54]),  # Ice Beam, Blizzard, Harden, Mist
-    (379, "Registeel", "Steel", None, "slow", [169, 89, 106, 110]),  # Iron Head-ish... use Headbutt, Earthquake, Harden, Withdraw
-    (380, "Latias", "Dragon", "Psychic", "slow", [94, 297, 155, 97]),  # Psychic, Dragon Pulse, Gust, Agility
-    (381, "Latios", "Dragon", "Psychic", "slow", [94, 297, 155, 97]),  # Psychic, Dragon Pulse, Gust, Agility
-    (382, "Kyogre", "Water", None, "slow", [57, 127, 58, 55]),  # Surf, Waterfall, Ice Beam, Water Gun
-    (383, "Groudon", "Ground", None, "slow", [89, 126, 88, 33]),  # Earthquake, Fire Blast, Rock Throw, Tackle
-    (384, "Rayquaza", "Dragon", "Flying", "slow", [293, 89, 126, 155]),  # Dragon Pulse, Earthquake, Fire Blast, Gust
-    (385, "Jirachi", "Steel", "Psychic", "slow", [94, 94, 65, 149]),  # Psychic, Dream Eater(Drain), Recover, Wish(??)
-    
-    # Sinnoh
-    (480, "Uxie", "Psychic", None, "slow", [94, 93, 97, 149]),  # Psychic, Confusion, Agility, Amnesia
-    (481, "Mesprit", "Psychic", None, "slow", [94, 93, 97, 149]),
-    (482, "Azelf", "Psychic", None, "slow", [94, 93, 97, 149]),
-    (483, "Dialga", "Steel", "Dragon", "slow", [293, 89, 126, 97]),  # Dragon Pulse, Earthquake, Fire Blast, Roar of Time
-    (484, "Palkia", "Water", "Dragon", "slow", [293, 57, 58, 97]),  # Dragon Pulse, Surf, Ice Beam, Spacial Rend
-    (485, "Heatran", "Fire", "Steel", "slow", [126, 53, 89, 93]),  # Fire Blast, Flamethrower, Earthquake, Lava Plume
-    (486, "Regigigas", "Normal", None, "slow", [36, 89, 169, 106]),  # Take Down, Earthquake, Headbutt, Harden
-    (487, "Giratina", "Ghost", "Dragon", "slow", [293, 94, 89, 93]),  # Dragon Pulse, Shadow Ball, Earthquake, Shadow Force
-    (488, "Cresselia", "Psychic", None, "slow", [94, 135, 93, 60]),  # Psychic, Moonlight (Recover = 105), Confusion, Psybeam
-    (489, "Phione", "Water", None, "slow", [57, 55, 97, 127]),
-    (490, "Manaphy", "Water", None, "slow", [57, 94, 58, 97]),
-    (491, "Darkrai", "Dark", None, "slow", [297, 94, 95, 101]),  # Dark Pulse, Psychic, Hypnosis, Night Shade
-    (492, "Shaymin", "Grass", None, "medium_slow", [75, 76, 79, 93]),  # Razor Leaf, Solar Beam, Growth... I mean Seed Flare
-    (493, "Arceus", "Normal", None, "slow", [94, 293, 89, 126]),  # Judgment, Dragon Pulse, Earthquake, Fire Blast
-    
-    # Unova
-    (494, "Victini", "Psychic", "Fire", "slow", [94, 126, 53, 60]),  # Psychic, Fire Blast, Flamethrower, Searing Shot
-    (638, "Cobalion", "Steel", "Fighting", "slow", [169, 117, 106, 110]),  # Sacred Sword, Close Combat... use Iron Head
-    (639, "Terrakion", "Rock", "Fighting", "slow", [89, 88, 117, 97]),
-    (640, "Virizion", "Grass", "Fighting", "slow", [75, 117, 97, 79]),
-    (641, "Tornadus", "Flying", None, "slow", [155, 97, 155, 298]),  # Gust, Agility, Hurricane, Air Slash
-    (642, "Thundurus", "Electric", "Flying", "slow", [85, 97, 155, 84]),
-    (643, "Reshiram", "Dragon", "Fire", "slow", [126, 293, 53, 298]),  # Blue Flare, Dragon Pulse, Flamethrower, Fusion Flare
-    (644, "Zekrom", "Dragon", "Electric", "slow", [85, 293, 89, 298]),  # Bolt Strike, Dragon Pulse, Earthquake, Fusion Bolt
-    (645, "Landorus", "Ground", "Flying", "slow", [89, 155, 97, 303]),  # Earthquake, Gust, Agility, Earth Power
-    (646, "Kyurem", "Dragon", "Ice", "slow", [58, 293, 59, 155]),  # Ice Beam, Dragon Pulse, Blizzard, Glaciate
-    (647, "Keldeo", "Water", "Fighting", "slow", [57, 117, 127, 97]),
-    (648, "Meloetta", "Normal", "Psychic", "slow", [94, 93, 297, 97]),
-    (649, "Genesect", "Bug", "Steel", "slow", [387, 53, 85, 293]),  # Techno Blast, Flamethrower, Thunderbolt, Flash Cannon
+def exp_for_level(level, growth_rate):
+    n = level
+    if growth_rate == "fast":
+        return int(0.8 * n**3)
+    elif growth_rate == "medium_fast":
+        return n**3
+    elif growth_rate == "medium_slow":
+        return int(1.2 * n**3 - 15 * n**2 + 100 * n - 140)
+    elif growth_rate == "slow":
+        return int(1.25 * n**3)
+    elif growth_rate == "erratic":
+        if n <= 50:
+            return int(n**3 * (100 - n) / 50)
+        elif n <= 68:
+            return int(n**3 * (150 - n) / 100)
+        elif n <= 98:
+            return int(n**3 * ((1911 - 10 * n) / 3) / 500)
+        else:
+            return int(n**3 * (160 - n) / 100)
+    elif growth_rate == "fluctuating":
+        if n <= 15:
+            return int(n**3 * ((n + 1) / 3 + 24) / 50)
+        elif n <= 36:
+            return int(n**3 * (n + 14) / 50)
+        else:
+            return int(n**3 * ((n / 2) + 32) / 50)
+    return 1000000
+
+# ── Pokemon names for all 649 species ──
+POKEMON_NAMES = [
+    "Bulbasaur","Ivysaur","Venusaur","Charmander","Charmeleon","Charizard",
+    "Squirtle","Wartortle","Blastoise","Caterpie","Metapod","Butterfree",
+    "Weedle","Kakuna","Beedrill","Pidgey","Pidgeotto","Pidgeot",
+    "Rattata","Raticate","Spearow","Fearow","Ekans","Arbok",
+    "Pikachu","Raichu","Sandshrew","Sandslash","NidoranF","Nidorina",
+    "Nidoqueen","NidoranM","Nidorino","Nidoking","Clefairy","Clefable",
+    "Vulpix","Ninetales","Jigglypuff","Wigglytuff","Zubat","Golbat",
+    "Oddish","Gloom","Vileplume","Paras","Parasect","Venonat",
+    "Venomoth","Diglett","Dugtrio","Meowth","Persian","Psyduck",
+    "Golduck","Mankey","Primeape","Growlithe","Arcanine","Poliwag",
+    "Poliwhirl","Poliwrath","Abra","Kadabra","Alakazam","Machop",
+    "Machoke","Machamp","Bellsprout","Weepinbell","Victreebel","Tentacool",
+    "Tentacruel","Geodude","Graveler","Golem","Ponyta","Rapidash",
+    "Slowpoke","Slowbro","Magnemite","Magneton","Farfetchd","Doduo",
+    "Dodrio","Seel","Dewgong","Grimer","Muk","Shellder",
+    "Cloyster","Gastly","Haunter","Gengar","Onix","Drowzee",
+    "Hypno","Krabby","Kingler","Voltorb","Electrode","Exeggcute",
+    "Exeggutor","Cubone","Marowak","Hitmonlee","Hitmonchan","Lickitung",
+    "Koffing","Weezing","Rhyhorn","Rhydon","Chansey","Tangela",
+    "Kangaskhan","Horsea","Seadra","Goldeen","Seaking","Staryu",
+    "Starmie","Mr. Mime","Scyther","Jynx","Electabuzz","Magmar",
+    "Pinsir","Tauros","Magikarp","Gyarados","Lapras","Ditto",
+    "Eevee","Vaporeon","Jolteon","Flareon","Porygon","Omanyte",
+    "Omastar","Kabuto","Kabutops","Aerodactyl","Snorlax","Articuno",
+    "Zapdos","Moltres","Dratini","Dragonair","Dragonite","Mewtwo",
+    "Mew","Chikorita","Bayleef","Meganium","Cyndaquil","Quilava",
+    "Typhlosion","Totodile","Croconaw","Feraligatr","Sentret","Furret",
+    "Hoothoot","Noctowl","Ledyba","Ledian","Spinarak","Ariados",
+    "Crobat","Chinchou","Lanturn","Pichu","Cleffa","Igglybuff",
+    "Togepi","Togetic","Natu","Xatu","Mareep","Flaaffy",
+    "Ampharos","Bellossom","Marill","Azumarill","Sudowoodo","Politoed",
+    "Hoppip","Skiploom","Jumpluff","Aipom","Sunkern","Sunflora",
+    "Yanma","Wooper","Quagsire","Espeon","Umbreon","Murkrow",
+    "Slowking","Misdreavus","Unown","Wobbuffet","Girafarig","Pineco",
+    "Forretress","Dunsparce","Gligar","Steelix","Snubbull","Granbull",
+    "Qwilfish","Scizor","Shuckle","Heracross","Sneasel","Teddiursa",
+    "Ursaring","Slugma","Magcargo","Swinub","Piloswine","Corsola",
+    "Remoraid","Octillery","Delibird","Mantine","Skarmory","Houndour",
+    "Houndoom","Kingdra","Phanpy","Donphan","Porygon2","Stantler",
+    "Smeargle","Tyrogue","Hitmontop","Smoochum","Elekid","Magby",
+    "Miltank","Blissey","Raikou","Entei","Suicune","Larvitar",
+    "Pupitar","Tyranitar","Lugia","Ho-Oh","Celebi","Treecko",
+    "Grovyle","Sceptile","Torchic","Combusken","Blaziken","Mudkip",
+    "Marshtomp","Swampert","Poochyena","Mightyena","Zigzagoon","Linoone",
+    "Wurmple","Silcoon","Beautifly","Cascoon","Dustox","Lotad",
+    "Lombre","Ludicolo","Seedot","Nuzleaf","Shiftry","Taillow",
+    "Swellow","Wingull","Pelipper","Ralts","Kirlia","Gardevoir",
+    "Surskit","Masquerain","Shroomish","Breloom","Slakoth","Vigoroth",
+    "Slaking","Nincada","Ninjask","Shedinja","Whismur","Loudred",
+    "Exploud","Makuhita","Hariyama","Azurill","Nosepass","Skitty",
+    "Delcatty","Sableye","Mawile","Aron","Lairon","Aggron",
+    "Meditite","Medicham","Electrike","Manectric","Plusle","Minun",
+    "Volbeat","Illumise","Roselia","Gulpin","Swalot","Carvanha",
+    "Sharpedo","Wailmer","Wailord","Numel","Camerupt","Torkoal",
+    "Spoink","Grumpig","Spinda","Trapinch","Vibrava","Flygon",
+    "Cacnea","Cacturne","Swablu","Altaria","Zangoose","Seviper",
+    "Lunatone","Solrock","Barboach","Whiscash","Corphish","Crawdaunt",
+    "Baltoy","Claydol","Lileep","Cradily","Anorith","Armaldo",
+    "Feebas","Milotic","Castform","Kecleon","Shuppet","Banette",
+    "Duskull","Dusclops","Tropius","Chimecho","Absol","Wynaut",
+    "Snorunt","Glalie","Spheal","Sealeo","Walrein","Clamperl",
+    "Huntail","Gorebyss","Relicanth","Luvdisc","Bagon","Shelgon",
+    "Salamence","Beldum","Metang","Metagross","Regirock","Regice",
+    "Registeel","Latias","Latios","Kyogre","Groudon","Rayquaza",
+    "Jirachi","Deoxys","Turtwig","Grotle","Torterra","Chimchar",
+    "Monferno","Infernape","Piplup","Prinplup","Empoleon","Starly",
+    "Staravia","Staraptor","Bidoof","Bibarel","Kricketot","Kricketune",
+    "Shinx","Luxio","Luxray","Budew","Roserade","Cranidos",
+    "Rampardos","Shieldon","Bastiodon","Burmy","Wormadam","Mothim",
+    "Combee","Vespiquen","Pachirisu","Buizel","Floatzel","Cherubi",
+    "Cherrim","Shellos","Gastrodon","Ambipom","Drifloon","Drifblim",
+    "Buneary","Lopunny","Mismagius","Honchkrow","Glameow","Purugly",
+    "Chingling","Stunky","Skuntank","Bronzor","Bronzong","Bonsly","Mime Jr.",
+    "Happiny","Chatot","Spiritomb","Gible","Gabite","Garchomp",
+    "Munchlax","Riolu","Lucario","Hippopotas","Hippowdon","Skorupi",
+    "Drapion","Croagunk","Toxicroak","Carnivine","Finneon","Lumineon",
+    "Mantyke","Snover","Abomasnow","Weavile","Magnezone","Lickilicky",
+    "Rhyperior","Tangrowth","Electivire","Magmortar","Togekiss","Yanmega",
+    "Leafeon","Glaceon","Gliscor","Mamoswine","Porygon-Z","Gallade",
+    "Probopass","Dusknoir","Froslass","Rotom","Uxie","Mesprit",
+    "Azelf","Dialga","Palkia","Heatran","Regigigas","Giratina",
+    "Cresselia","Phione","Manaphy","Darkrai","Shaymin","Arceus",
+    "Victini","Snivy","Servine","Serperior","Tepig","Pignite",
+    "Emboar","Oshawott","Dewott","Samurott","Patrat","Watchog",
+    "Lillipup","Herdier","Stoutland","Purrloin","Liepard","Pansage",
+    "Simisage","Pansear","Simisear","Panpour","Simipour","Munna",
+    "Musharna","Pidove","Tranquill","Unfezant","Blitzle","Zebstrika",
+    "Roggenrola","Boldore","Gigalith","Woobat","Swoobat","Drilbur",
+    "Excadrill","Audino","Timburr","Gurdurr","Conkeldurr","Tympole",
+    "Palpitoad","Seismitoad","Throh","Sawk","Sewaddle","Swadloon",
+    "Leavanny","Venipede","Whirlipede","Scolipede","Cottonee","Whimsicott",
+    "Petilil","Lilligant","Basculin","Sandile","Krokorok","Krookodile",
+    "Darumaka","Darmanitan","Maractus","Dwebble","Crustle","Scraggy",
+    "Scrafty","Sigilyph","Yamask","Cofagrigus","Tirtouga","Carracosta",
+    "Archen","Archeops","Trubbish","Garbodor","Zorua","Zoroark",
+    "Minccino","Cinccino","Gothita","Gothorita","Gothitelle","Solosis",
+    "Duosion","Reuniclus","Ducklett","Swanna","Vanillite","Vanillish",
+    "Vanilluxe","Deerling","Sawsbuck","Emolga","Karrablast","Escavalier",
+    "Foongus","Amoonguss","Frillish","Jellicent","Alomomola","Joltik",
+    "Galvantula","Ferroseed","Ferrothorn","Klink","Klang","Klinklang",
+    "Tynamo","Eelektrik","Eelektross","Elgyem","Beheeyem","Litwick",
+    "Lampent","Chandelure","Axew","Fraxure","Haxorus","Cubchoo",
+    "Beartic","Cryogonal","Shelmet","Accelgor","Stunfisk","Mienfoo",
+    "Mienshao","Druddigon","Golett","Golurk","Pawniard","Bisharp",
+    "Bouffalant","Rufflet","Braviary","Vullaby","Mandibuzz","Heatmor",
+    "Durant","Deino","Zweilous","Hydreigon","Larvesta","Volcarona",
+    "Cobalion","Terrakion","Virizion","Tornadus","Thundurus","Reshiram",
+    "Zekrom","Landorus","Kyurem","Keldeo","Meloetta","Genesect",
 ]
 
-# Pokemon with multiple forms we only want one of
-EXTRAS = [
-    (144, "Articuno"),  # Already in list
-    (150, "Mewtwo"),
-    (151, "Mew"),
-    (249, "Lugia"),
-    (250, "Ho-Oh"),
-    (382, "Kyogre"),
-    (383, "Groudon"),
-    (384, "Rayquaza"),
-    (483, "Dialga"),
-    (484, "Palkia"),
-    (487, "Giratina"),
-    (643, "Reshiram"),
-    (644, "Zekrom"),
-    (646, "Kyurem"),
-]
+# ── Species that use Slow growth rate (legendaries & mythicals) ──
+SLOW_SPECIES = {
+    144, 145, 146, 150, 151, 243, 244, 245, 249, 250, 251,
+    377, 378, 379, 380, 381, 382, 383, 384, 385, 386,
+    480, 481, 482, 483, 484, 485, 486, 487, 488, 489, 490, 491, 492, 493,
+    494, 638, 639, 640, 641, 642, 643, 644, 645, 646, 647, 648, 649,
+}
 
-# Pseudo-legendaries
-PSEUDO_LEGENDARIES = [
-    (149, "Dragonite", "Dragon", "Flying", "slow", [293, 89, 130, 36]),
-    (248, "Tyranitar", "Rock", "Dark", "slow", [89, 88, 297, 36]),
-    (373, "Salamence", "Dragon", "Flying", "slow", [293, 53, 89, 156]),
-    (376, "Metagross", "Steel", "Psychic", "slow", [169, 94, 89, 93]),
-    (445, "Garchomp", "Dragon", "Ground", "slow", [293, 89, 291, 97]),
-    (474, "Porygon-Z", "Normal", None, "medium_fast", [94, 58, 85, 93]),
-    (635, "Hydreigon", "Dark", "Dragon", "slow", [297, 293, 126, 89]),
-]
+# ── Species that use Medium Slow growth rate (starters & their families) ──
+MEDIUM_SLOW_SPECIES = {
+    1, 2, 3, 4, 5, 6, 7, 8, 9, 152, 153, 154, 155, 156, 157,
+    158, 159, 160, 252, 253, 254, 255, 256, 257, 258, 259, 260,
+    387, 388, 389, 390, 391, 392, 393, 394, 395,
+    495, 496, 497, 498, 499, 500, 501, 502, 503,
+}
 
-# Starters (final forms)
-STARTERS = [
-    (6, "Charizard", "Fire", "Flying", "medium_slow", [53, 126, 156, 89]),
-    (9, "Blastoise", "Water", None, "medium_slow", [57, 58, 127, 110]),
-    (3, "Venusaur", "Grass", "Poison", "medium_slow", [76, 77, 75, 89]),
-    (154, "Meganium", "Grass", None, "medium_slow", [76, 75, 79, 89]),
-    (157, "Typhlosion", "Fire", None, "medium_slow", [53, 126, 97, 89]),
-    (160, "Feraligatr", "Water", None, "medium_slow", [57, 58, 127, 89]),
-    (254, "Sceptile", "Grass", None, "medium_slow", [75, 76, 291, 89]),
-    (257, "Blaziken", "Fire", "Fighting", "medium_slow", [126, 117, 89, 53]),
-    (260, "Swampert", "Water", "Ground", "medium_slow", [57, 89, 58, 127]),
-    (389, "Torterra", "Grass", "Ground", "medium_slow", [89, 75, 76, 36]),
-    (392, "Infernape", "Fire", "Fighting", "medium_slow", [126, 117, 89, 53]),
-    (395, "Empoleon", "Water", "Steel", "medium_slow", [57, 58, 127, 169]),
-    (497, "Serperior", "Grass", None, "medium_slow", [75, 76, 97, 89]),
-    (500, "Emboar", "Fire", "Fighting", "medium_slow", [126, 117, 53, 89]),
-    (503, "Samurott", "Water", None, "medium_slow", [57, 127, 58, 169]),
-]
+# ── Cool/famous non-legendary species for priority sorting (lvl 40) ──
+PRIORITY_SPECIES = {
+    1, 2, 3, 4, 5, 6, 7, 8, 9, 25, 26,
+    31, 34, 36, 38, 40, 51, 55, 59, 62, 65, 68, 71, 76, 78, 80,
+    82, 85, 91, 94, 95, 99, 101, 103, 105, 106, 107, 108, 110, 112,
+    117, 119, 122, 123, 128, 130, 131, 132, 133, 134, 135, 136, 137, 142, 143,
+    147, 148, 149, 152, 153, 154, 155, 156, 157, 158, 159, 160,
+    175, 176, 183, 184, 185, 196, 197, 202, 208, 212, 214, 215,
+    225, 227, 229, 230, 233, 237, 241, 242, 246, 247, 248,
+    252, 253, 254, 255, 256, 257, 258, 259, 260,
+    264, 282, 284, 286, 289, 297, 302, 303, 306, 310, 330, 334, 335, 336,
+    350, 359, 371, 372, 373, 374, 375, 376,
+    387, 388, 389, 390, 391, 392, 393, 394, 395,
+    398, 405, 407, 411, 419, 424, 429, 430, 443, 444, 445, 448, 461, 462,
+    463, 464, 465, 466, 467, 468, 469, 470, 471, 472, 473,
+    474, 475, 477, 478, 479,
+    495, 496, 497, 498, 499, 500, 501, 502, 503,
+    505, 508, 530, 531, 534, 537, 553, 555, 571,
+    576, 579, 581, 584, 586, 589, 591, 593, 596, 598,
+    601, 604, 609, 612, 614, 617, 620, 628, 630,
+    633, 634, 635, 637,
+}
 
-# Eeveelutions
-EEVEELUTIONS = [
-    (134, "Vaporeon", "Water", None, "medium_fast", [57, 58, 127, 97]),
-    (135, "Jolteon", "Electric", None, "medium_fast", [85, 86, 97, 84]),
-    (136, "Flareon", "Fire", None, "medium_fast", [126, 53, 36, 97]),
-    (196, "Espeon", "Psychic", None, "medium_fast", [94, 60, 97, 149]),
-    (197, "Umbreon", "Dark", None, "medium_fast", [297, 109, 103, 97]),
-    (470, "Leafeon", "Grass", None, "medium_fast", [75, 76, 97, 149]),
-    (471, "Glaceon", "Ice", None, "medium_fast", [58, 59, 97, 55]),
-]
-
-# All Pokemon to inject (filtered to unique species)
-ALL_TO_INJECT = []
-
-# Get unique species from legendaries (one per species)
-seen_species = set()
-for entry in LEGENDARIES:
-    sid = entry[0]
-    if sid not in seen_species:
-        seen_species.add(sid)
-        ALL_TO_INJECT.append(entry)
-
-for entry in PSEUDO_LEGENDARIES:
-    sid = entry[0]
-    if sid not in seen_species:
-        seen_species.add(sid)
-        ALL_TO_INJECT.append(entry)
-
-for entry in STARTERS:
-    sid = entry[0]
-    if sid not in seen_species:
-        seen_species.add(sid)
-        ALL_TO_INJECT.append(entry)
-
-for entry in EEVEELUTIONS:
-    sid = entry[0]
-    if sid not in seen_species:
-        seen_species.add(sid)
-        ALL_TO_INJECT.append(entry)
-
-# Also add Pikachu and Raichu (they're cute)
-PIKACHU_FAMILY = [
-    (25, "Pikachu", "Electric", None, "medium_fast", [85, 86, 97, 84]),
-    (26, "Raichu", "Electric", None, "medium_fast", [85, 86, 97, 84]),
-]
-for entry in PIKACHU_FAMILY:
-    sid = entry[0]
-    if sid not in seen_species:
-        seen_species.add(sid)
-        ALL_TO_INJECT.append(entry)
-
-# Sigilyph
-SIGILYPH = [(561, "Sigilyph", "Psychic", "Flying", "medium_fast", [94, 298, 58, 155])]
-for entry in SIGILYPH:
-    sid = entry[0]
-    if sid not in seen_species:
-        seen_species.add(sid)
-        ALL_TO_INJECT.append(entry)
-
-print(f"Total unique Pokemon to inject: {len(ALL_TO_INJECT)}")
+def make_shiny_pid(tid=25077, sid=62212, desired_nature=None):
+    """Generate a PID that results in a shiny Pokemon.
+    Shiny condition: (PID_high ^ PID_low ^ TID ^ SID) < 8
+    """
+    tsn = tid ^ sid
+    base_xor = tsn & 0xFFF8
+    for _ in range(200000):
+        pid_high = random.randint(0, 0xFFFF)
+        for lb in range(8):
+            xor_val = base_xor | lb
+            pid_low = pid_high ^ xor_val
+            pid = (pid_high << 16) | pid_low
+            if desired_nature is None or pid % 25 == desired_nature:
+                return pid
+    return None
 
 def make_pid_for_nature(desired_nature):
-    """Generate a PID that results in the given nature"""
     for _ in range(200000):
         pid = random.randint(0, 0xFFFFFFFF)
         if pid % 25 == desired_nature:
             return pid
-    return random.randint(0, 0xFFFFFFFF)  # fallback
+    return random.randint(0, 0xFFFFFFFF)
 
 def encode_utf16_le(text, max_len):
-    """Encode text as UTF-16LE with null terminator"""
     encoded = text.encode('utf-16-le')
     if len(encoded) > max_len * 2:
         encoded = encoded[:max_len * 2]
@@ -801,277 +372,518 @@ def encode_utf16_le(text, max_len):
 def create_pokemon(species_id, species_name, moves, growth_rate="slow",
                    level=100, tid=25077, sid=62212, nature=0, ot_name="FAH",
                    language=2, game_version=19, ball=4, met_level=50,
-                   met_location=0, encounter_type=0):
-    """
-    Create a Gen 5 PKM structure (decrypted, 136 bytes)
-    
-    game_version: 19 = Pokemon Black
-    ball: 4 = Poke Ball
-    met_location: 0 = "Met in a trade" or use a specific location
-    """
-    pid = make_pid_for_nature(nature)
-    
-    # Experience for level 100
-    exp = EXP_AT_100.get(growth_rate, 1000000)
-    
-    # PP for moves
+                   met_location=0, encounter_type=0, shiny=False):
+    pid = make_shiny_pid(tid, sid, nature) if shiny else make_pid_for_nature(nature)
+    if pid is None:
+        pid = make_pid_for_nature(nature)
+
+    exp = exp_for_level(level, growth_rate)
+
     pp1 = get_pp(moves[0]) if len(moves) > 0 else 0
     pp2 = get_pp(moves[1]) if len(moves) > 1 else 0
     pp3 = get_pp(moves[2]) if len(moves) > 2 else 0
     pp4 = get_pp(moves[3]) if len(moves) > 3 else 0
-    
-    # Create the 136-byte structure
+
     buf = bytearray(136)
-    
-    # PID (0x00)
     struct.pack_into('<I', buf, 0, pid)
-    
-    # Checksum placeholder (0x06), will be calculated later
-    # Keep as 0 for now
-    
-    # Block A (bytes 0x08-0x27)
-    struct.pack_into('<H', buf, 0x08, species_id)  # Species
-    struct.pack_into('<H', buf, 0x0A, 0)  # Held Item (none)
-    struct.pack_into('<H', buf, 0x0C, tid)  # TID
-    struct.pack_into('<H', buf, 0x0E, sid)  # SID
-    struct.pack_into('<I', buf, 0x10, exp)  # EXP
-    buf[0x14] = 255  # Friendship (max)
-    buf[0x15] = 0  # Ability (0 = first ability)
-    buf[0x16] = 0  # Markings
-    buf[0x17] = language  # Language (2 = English)
-    
-    # EVs (all 0)
-    buf[0x18] = 0  # HP EV
-    buf[0x19] = 0  # ATK EV
-    buf[0x1A] = 0  # DEF EV
-    buf[0x1B] = 0  # SPE EV
-    buf[0x1C] = 0  # SPA EV
-    buf[0x1D] = 0  # SPD EV
-    
-    # Contest stats (all 0)
-    buf[0x1E] = 0  # Cool
-    buf[0x1F] = 0  # Beauty
-    buf[0x20] = 0  # Cute
-    buf[0x21] = 0  # Smart
-    buf[0x22] = 0  # Tough
-    buf[0x23] = 0  # Sheen
-    
-    # Ribbons (all 0)
-    struct.pack_into('<H', buf, 0x24, 0)  # Sinnoh Ribbon Set 1
-    struct.pack_into('<H', buf, 0x26, 0)  # Unova Ribbon Set
-    
-    # Block B (bytes 0x28-0x47)
-    # Moves
+
+    struct.pack_into('<H', buf, 0x08, species_id)
+    struct.pack_into('<H', buf, 0x0A, 0)
+    struct.pack_into('<H', buf, 0x0C, tid)
+    struct.pack_into('<H', buf, 0x0E, sid)
+    struct.pack_into('<I', buf, 0x10, exp)
+    buf[0x14] = 255
+    buf[0x15] = 0
+    buf[0x16] = 0
+    buf[0x17] = language
+
+    buf[0x18] = 0
+    buf[0x19] = 0
+    buf[0x1A] = 0
+    buf[0x1B] = 0
+    buf[0x1C] = 0
+    buf[0x1D] = 0
+
+    buf[0x1E] = 0
+    buf[0x1F] = 0
+    buf[0x20] = 0
+    buf[0x21] = 0
+    buf[0x22] = 0
+    buf[0x23] = 0
+
+    struct.pack_into('<H', buf, 0x24, 0)
+    struct.pack_into('<H', buf, 0x26, 0)
+
     for i in range(4):
         move_id = moves[i] if i < len(moves) else 0
         struct.pack_into('<H', buf, 0x28 + i * 2, move_id)
-    
-    # PP
+
     buf[0x30] = pp1
     buf[0x31] = pp2
     buf[0x32] = pp3
     buf[0x33] = pp4
-    
-    # PP Ups (all 0)
+
     struct.pack_into('<I', buf, 0x34, 0)
-    
-    # Unknown at 0x38-0x3B
     struct.pack_into('<I', buf, 0x38, 0)
-    
-    # Hoenn Ribbons
     struct.pack_into('<H', buf, 0x3C, 0)
     struct.pack_into('<H', buf, 0x3E, 0)
-    
-    # Flags + Nature
-    buf[0x40] = 0  # Form flags
-    buf[0x41] = nature  # Nature
-    buf[0x42] = 0  # Ability flags
-    buf[0x43] = 0  # Unused
-    
-    # Egg/Unknown at 0x44-0x47
+
+    buf[0x40] = 0
+    buf[0x41] = nature if not shiny else pid % 25
+    buf[0x42] = 0
+    buf[0x43] = 0
+
     struct.pack_into('<I', buf, 0x44, 0)
-    
-    # Block C (bytes 0x48-0x67)
-    # Nickname
+
     nickname = encode_utf16_le(species_name, 11)
     buf[0x48:0x48+len(nickname)] = nickname
-    
-    buf[0x5E] = 0  # Unknown
-    buf[0x5F] = game_version  # Origin game (19 = Black)
-    
-    # Sinnoh Ribbons 3 and 4
+
+    buf[0x5E] = 0
+    buf[0x5F] = game_version
+
     struct.pack_into('<H', buf, 0x60, 0)
     struct.pack_into('<H', buf, 0x62, 0)
-    
-    # Unused
     struct.pack_into('<I', buf, 0x64, 0)
-    
-    # Block D (bytes 0x68-0x87)
-    # OT Name
+
     ot_encoded = encode_utf16_le(ot_name[:7], 7)
     buf[0x68:0x68+len(ot_encoded)] = ot_encoded
-    
-    # Dates (all 0 - not important)
-    buf[0x78] = 0  # Date Egg Received - year
-    buf[0x79] = 0  # month
-    buf[0x7A] = 0  # day
-    buf[0x7B] = 0  # Date Met - year
-    buf[0x7C] = 0  # month
-    buf[0x7D] = 0  # day
-    
-    # Egg Location
+
+    buf[0x78] = 0
+    buf[0x79] = 0
+    buf[0x7A] = 0
+    buf[0x7B] = 0
+    buf[0x7C] = 0
+    buf[0x7D] = 0
+
     struct.pack_into('<H', buf, 0x7E, 0)
-    
-    # Met Location
     struct.pack_into('<H', buf, 0x80, met_location)
-    
-    # Pokerus
+
     buf[0x82] = 0
-    
-    # Poke Ball
     buf[0x83] = ball
-    
-    # Met Level (lower 7 bits) + OT Gender (bit 7)
     buf[0x84] = met_level & 0x7F
-    
-    # Encounter Type
     buf[0x85] = encounter_type
-    
-    # Unused
     buf[0x86] = 0
     buf[0x87] = 0
-    
-    # Calculate and set checksum
+
     cksum = calc_checksum(bytes(buf))
     struct.pack_into('<H', buf, 6, cksum)
-    
+
     return bytes(buf)
 
-def get_slot_offset(box_base, slot_idx):
-    """Get file offset for box slot index (0-719).
-    Each box occupies 0x1000 bytes, slots are contiguous within each box.
+
+# ── Original legendary sets ──
+LEGENDARIES = [
+    (144, "Articuno", [58, 155, 130, 47]),
+    (145, "Zapdos", [85, 155, 130, 84]),
+    (146, "Moltres", [53, 155, 130, 52]),
+    (150, "Mewtwo", [94, 60, 65, 149]),
+    (151, "Mew", [94, 60, 65, 149]),
+    (243, "Raikou", [85, 97, 84, 86]),
+    (244, "Entei", [53, 126, 97, 52]),
+    (245, "Suicune", [57, 58, 48, 55]),
+    (249, "Lugia", [94, 58, 97, 155]),
+    (250, "Ho-Oh", [126, 53, 130, 155]),
+    (377, "Regirock", [88, 89, 106, 110]),
+    (378, "Regice", [58, 59, 106, 54]),
+    (379, "Registeel", [169, 89, 106, 110]),
+    (380, "Latias", [94, 297, 155, 97]),
+    (381, "Latios", [94, 297, 155, 97]),
+    (382, "Kyogre", [57, 127, 58, 55]),
+    (383, "Groudon", [89, 126, 88, 33]),
+    (384, "Rayquaza", [293, 89, 126, 155]),
+    (385, "Jirachi", [94, 94, 65, 149]),
+    (480, "Uxie", [94, 93, 97, 149]),
+    (481, "Mesprit", [94, 93, 97, 149]),
+    (482, "Azelf", [94, 93, 97, 149]),
+    (483, "Dialga", [293, 89, 126, 97]),
+    (484, "Palkia", [293, 57, 58, 97]),
+    (485, "Heatran", [126, 53, 89, 93]),
+    (486, "Regigigas", [36, 89, 169, 106]),
+    (487, "Giratina", [293, 94, 89, 93]),
+    (488, "Cresselia", [94, 135, 93, 60]),
+    (489, "Phione", [57, 55, 97, 127]),
+    (490, "Manaphy", [57, 94, 58, 97]),
+    (491, "Darkrai", [297, 94, 95, 101]),
+    (492, "Shaymin", [75, 76, 79, 93]),
+    (493, "Arceus", [94, 293, 89, 126]),
+    (494, "Victini", [94, 126, 53, 60]),
+    (638, "Cobalion", [169, 117, 106, 110]),
+    (639, "Terrakion", [89, 88, 117, 97]),
+    (640, "Virizion", [75, 117, 97, 79]),
+    (641, "Tornadus", [155, 97, 155, 298]),
+    (642, "Thundurus", [85, 97, 155, 84]),
+    (643, "Reshiram", [126, 293, 53, 298]),
+    (644, "Zekrom", [85, 293, 89, 298]),
+    (645, "Landorus", [89, 155, 97, 303]),
+    (646, "Kyurem", [58, 293, 59, 155]),
+    (647, "Keldeo", [57, 117, 127, 97]),
+    (648, "Meloetta", [94, 93, 297, 97]),
+    (649, "Genesect", [387, 53, 85, 293]),
+]
+
+PSEUDO_LEGENDARIES = [
+    (149, "Dragonite", [293, 89, 130, 36]),
+    (248, "Tyranitar", [89, 88, 297, 36]),
+    (373, "Salamence", [293, 53, 89, 156]),
+    (376, "Metagross", [169, 94, 89, 93]),
+    (445, "Garchomp", [293, 89, 291, 97]),
+    (474, "Porygon-Z", [94, 58, 85, 93]),
+    (635, "Hydreigon", [297, 293, 126, 89]),
+]
+
+STARTERS = [
+    (6, "Charizard", [53, 126, 156, 89]),
+    (9, "Blastoise", [57, 58, 127, 110]),
+    (3, "Venusaur", [76, 77, 75, 89]),
+    (154, "Meganium", [76, 75, 79, 89]),
+    (157, "Typhlosion", [53, 126, 97, 89]),
+    (160, "Feraligatr", [57, 58, 127, 89]),
+    (254, "Sceptile", [75, 76, 291, 89]),
+    (257, "Blaziken", [126, 117, 89, 53]),
+    (260, "Swampert", [57, 89, 58, 127]),
+    (389, "Torterra", [89, 75, 76, 36]),
+    (392, "Infernape", [126, 117, 89, 53]),
+    (395, "Empoleon", [57, 58, 127, 169]),
+    (497, "Serperior", [75, 76, 97, 89]),
+    (500, "Emboar", [126, 117, 53, 89]),
+    (503, "Samurott", [57, 127, 58, 169]),
+]
+
+EEVEELUTIONS = [
+    (134, "Vaporeon", [57, 58, 127, 97]),
+    (135, "Jolteon", [85, 86, 97, 84]),
+    (136, "Flareon", [126, 53, 36, 97]),
+    (196, "Espeon", [94, 60, 97, 149]),
+    (197, "Umbreon", [297, 109, 103, 97]),
+    (470, "Leafeon", [75, 76, 97, 149]),
+    (471, "Glaceon", [58, 59, 97, 55]),
+]
+
+PIKACHU_FAMILY = [
+    (25, "Pikachu", [85, 86, 97, 84]),
+    (26, "Raichu", [85, 86, 97, 84]),
+]
+
+SIGILYPH = [(561, "Sigilyph", [94, 298, 58, 155])]
+
+# ── Original legendary-only list (for default mode) ──
+def get_legendary_list():
+    seen = set()
+    result = []
+    for entry in LEGENDARIES + PSEUDO_LEGENDARIES + STARTERS + EEVEELUTIONS + PIKACHU_FAMILY + SIGILYPH:
+        sid, name, *rest = entry
+        if sid not in seen:
+            seen.add(sid)
+            moves = rest[0] if rest else [33]
+            result.append((sid, name, moves))
+    return result
+
+def get_all_species_list():
+    """Generate data for all 649 species sorted by priority with levels.
+    
+    Priority order: legendaries (lvl 40) > cool/famous (lvl 40) > rest (lvl 20)
     """
+    legendaries = []
+    priority = []
+    others = []
+    for sid in range(1, 650):
+        name = POKEMON_NAMES[sid - 1]
+        moves = [33, 33, 33, 33]
+        if sid in SLOW_SPECIES:
+            legendaries.append((sid, name, moves, 40))
+        elif sid in PRIORITY_SPECIES:
+            priority.append((sid, name, moves, 40))
+        else:
+            others.append((sid, name, moves, 20))
+    return legendaries + priority + others
+
+
+def crc16_ccitt_false(data):
+    crc = 0xFFFF
+    for b in data:
+        crc ^= (b << 8)
+        for _ in range(8):
+            if crc & 0x8000:
+                crc = (crc << 1) ^ 0x1021
+            else:
+                crc <<= 1
+        crc &= 0xFFFF
+    return crc
+
+def organize_boxes(save_data, box_base):
+    """Read all Pokemon from boxes, sort by National Dex ID, write back in order.
+
+    Scans all 24 boxes (720 slots), decrypts each non-empty Pokemon,
+    sorts them by species ID, then writes them sequentially from slot 0,
+    clearing the remaining slots.
+    """
+    pokemon_list = []
+    for slot_idx in range(720):
+        offset = get_slot_offset(box_base, slot_idx)
+        if offset + 136 > len(save_data):
+            break
+        encrypted = bytes(save_data[offset:offset+136])
+        pid = struct.unpack_from('<I', encrypted, 0)[0]
+        ck = struct.unpack_from('<H', encrypted, 6)[0]
+        if pid == 0 or ck == 0 or ck == 0xFFFF:
+            continue
+        try:
+            decrypted = decrypt_stored(encrypted)
+            species_id = struct.unpack_from('<H', decrypted, 0x08)[0]
+            if species_id == 0 or species_id > 649:
+                continue
+            pokemon_list.append((species_id, decrypted))
+        except Exception:
+            continue
+
+    total = len(pokemon_list)
+    print(f"  Found {total} non-empty Pokemon in boxes")
+
+    pokemon_list.sort(key=lambda x: x[0])
+
+    for i, (species_id, decrypted) in enumerate(pokemon_list):
+        offset = get_slot_offset(box_base, i)
+        re_encrypted = encrypt_stored(decrypted)
+        save_data[offset:offset+136] = re_encrypted
+
+    for i in range(total, 720):
+        offset = get_slot_offset(box_base, i)
+        save_data[offset:offset+136] = bytes(136)
+
+    print(f"  Organized {total} Pokemon by National Dex order (#001-#649)")
+    return total
+
+
+def update_box_checksums(save_data, box_base, num_boxes=24):
+    for b in range(num_boxes):
+        start = box_base + b * 0x1000
+        if start + 0x1000 > len(save_data):
+            break
+        box_data = save_data[start:start + 0xFF0]
+        chk = crc16_ccitt_false(bytes(box_data))
+        struct.pack_into('<H', save_data, start + 0xFF2, chk)
+
+def get_slot_offset(box_base, slot_idx):
     box = slot_idx // 30
     slot_in_box = slot_idx % 30
     return box_base + box * 0x1000 + slot_in_box * 136
 
 def get_save_slot_offset(save_data):
-    """Determine which save slot is active.
-    In Gen 5, the save alternates between two slots.
-    We check both and use the one with valid data.
-    Box data area starts at 0x400 within the active slot.
-    """
-    # Check slot 1 (0x00000) and slot 2 (0x20000)
-    # A slot is active if it has box names starting at 0x000
     slot1_valid = save_data[0:4] == b'\x03\x00\x00\x00' and save_data[4:10] == b'\x42\x00\x4F\x00\x58\x00'
-    
-    # Slot 2 might have "BOX 1" at 0x20000
     slot2_valid = save_data[0x20000:0x20004] == b'\x03\x00\x00\x00' and save_data[0x20004:0x2000A] == b'\x42\x00\x4F\x00\x58\x00'
-    
     if slot1_valid:
-        return 0  # Slot 1 is active
+        return 0
     elif slot2_valid:
-        return 0x20000  # Slot 2 is active
+        return 0x20000
     else:
-        # Default to slot 1
         return 0
 
-def main():
-    save_path = os.path.expanduser("~/Emulator/Pokemon - Black Version (USA Europe) (NDSi Enhanced)/Pokemon - Black Version (USA, Europe) (NDSi Enhanced).sav")
+def fill_pokedex(save_data, slot_offset):
+    """Fill all Pokedex seen/caught flags for 649 species.
     
-    # Check if a custom path was passed
-    if len(sys.argv) > 1:
-        save_path = sys.argv[1]
+    Pokedex data offset within save slot: 0xD1B0
+    Structure: first 4 bytes initial marker, then 0x131 dwords of 0xFFFFFFFF
+    """
+    dex_start = slot_offset + 0xD1B0
+    if dex_start + 0x4C8 > len(save_data):
+        print(f"  [WARN] Pokedex offset 0x{dex_start:05X} out of bounds, skipping")
+        return False
+
+    save_data[dex_start:dex_start+4] = struct.pack('<I', 0x00001803)
+    offset = dex_start + 4
+    for i in range(0x131):
+        if offset + 4 <= len(save_data):
+            save_data[offset:offset+4] = b'\xFF\xFF\xFF\xFF'
+            offset += 4
+
+    print(f"  Pokedex filled at save offset 0x{dex_start:05X}")
+    return True
+
+def inject_pokemon(save_data, box_base, species_list, shiny=False, slot_range=(0, 720), force=False):
+    """Inject Pokemon into PC box slots within the given slot index range.
     
-    if not os.path.exists(save_path):
-        print(f"Save file not found: {save_path}")
-        return 1
-    
-    print(f"Reading save file: {save_path}")
-    with open(save_path, 'rb') as f:
-        save_data = bytearray(f.read())
-    
-    print(f"Save file size: {len(save_data)} bytes")
-    
-    # Determine the active save slot offset
-    slot_offset = get_save_slot_offset(save_data)
-    print(f"Active save slot offset: 0x{slot_offset:05X}")
-    
-    # Box data starts at 0x400 from the slot base
-    box_base = slot_offset + 0x400
-    print(f"Box data base offset: 0x{box_base:05X}")
-    
-    # Find empty slots
-    empty_slots = []
-    for slot_idx in range(720):  # 24 boxes x 30 slots
+    If force=True, overwrites all slots regardless of existing data.
+    If force=False, only fills empty slots (pid==0 or cksum==0/0xFFFF).
+    """
+    slots = []
+    for slot_idx in range(slot_range[0], slot_range[1]):
         offset = get_slot_offset(box_base, slot_idx)
         if offset + 136 > len(save_data):
             break
-        slot_data = save_data[offset:offset+136]
-        pid = struct.unpack_from('<I', slot_data, 0)[0]
-        ck = struct.unpack_from('<H', slot_data, 6)[0]
-        if pid == 0 or ck == 0 or ck == 0xFFFF:
-            empty_slots.append(offset)
-    
-    print(f"Found {len(empty_slots)} empty slots")
-    
-    # Check how many Pokemon we want to inject
-    to_inject = ALL_TO_INJECT
-    print(f"Pokemon to inject: {len(to_inject)}")
-    
-    if len(to_inject) > len(empty_slots):
-        print(f"Warning: Not enough empty slots! Need {len(to_inject)}, have {len(empty_slots)}")
-        print("Will only fill available empty slots.")
-        to_inject = to_inject[:len(empty_slots)]
-    
-    # Inject Pokemon
+        if force:
+            slots.append((offset, slot_idx))
+        else:
+            slot_data = save_data[offset:offset+136]
+            pid = struct.unpack_from('<I', slot_data, 0)[0]
+            ck = struct.unpack_from('<H', slot_data, 6)[0]
+            if pid == 0 or ck == 0 or ck == 0xFFFF:
+                slots.append((offset, slot_idx))
+
+    mode = "overwrite" if force else "empty"
+    print(f"  Found {len(slots)} {mode} slots in range [{slot_range[0]}, {slot_range[1]})")
+
+    to_inject = species_list
+    if len(to_inject) > len(slots):
+        print(f"  Warning: Only {len(slots)} slots available, need {len(to_inject)}")
+        print(f"  Will inject first {len(slots)} species.")
+        to_inject = to_inject[:len(slots)]
+
     injected = 0
-    for i, (species_id, species_name, *_) in enumerate(to_inject):
-        if i >= len(empty_slots):
+    for i, entry in enumerate(to_inject):
+        if i >= len(slots):
             break
-        
-        offset = empty_slots[i]
-        
-        # Get the moves for this Pokemon
-        entry = None
-        for e in ALL_TO_INJECT:
-            if e[0] == species_id:
-                entry = e
-                break
-        
-        if entry is None:
-            continue
-        
-        moves = entry[5] if len(entry) > 5 else [33, 0, 0, 0]  # Default: Tackle
-        growth_rate = entry[4] if len(entry) > 4 else "slow"
-        
-        # Create the Pokemon
+
+        if len(entry) == 4:
+            species_id, species_name, moves, level = entry
+        else:
+            species_id, species_name, moves = entry
+            level = 100
+
+        offset, slot_idx = slots[i]
+
+        if species_id in SLOW_SPECIES:
+            growth_rate = "slow"
+        elif species_id in MEDIUM_SLOW_SPECIES:
+            growth_rate = "medium_slow"
+        else:
+            growth_rate = "medium_fast"
+
         try:
-            plain_pkm = create_pokemon(species_id, species_name, moves, growth_rate=growth_rate)
+            plain_pkm = create_pokemon(
+                species_id, species_name, moves,
+                growth_rate=growth_rate, shiny=shiny, level=level,
+                met_level=min(level, 50)
+            )
             encrypted = encrypt_stored(plain_pkm)
-            
-            # Write to save
             save_data[offset:offset+136] = encrypted
             injected += 1
-            
-            print(f"  Injected #{i+1}: {species_name} (ID {species_id}) at offset 0x{offset:06X}")
+            if i % 50 == 0 or i == len(to_inject) - 1:
+                print(f"  Injected {i+1}/{len(to_inject)}: {species_name} (ID {species_id}) into slot {slot_idx}")
         except Exception as e:
             print(f"  Failed to inject {species_name}: {e}")
-    
+
+    return injected
+
+
+def main():
+    parser = argparse.ArgumentParser(
+        description="Pokemon Black Save Injector",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog="""
+Examples:
+  python inject_legendaries.py                    # legendaries only
+  python inject_legendaries.py --all              # all 649 species
+  python inject_legendaries.py --all --shiny      # all 649, shiny
+  python inject_legendaries.py --all --pokedex    # all 649 + fill pokedex
+  python inject_legendaries.py --pokedex          # just fill pokedex
+  python inject_legendaries.py --organize         # sort boxes by national dex
+  python inject_legendaries.py --all --shiny --pokedex  # everything
+  python inject_legendaries.py /path/to/save.sav  # custom save path
+        """
+    )
+    parser.add_argument('save_path', nargs='?', default=None,
+                        help='Path to save file (optional)')
+    parser.add_argument('--all', action='store_true',
+                        help='Inject all 649 species instead of just legendaries')
+    parser.add_argument('--shiny', action='store_true',
+                        help='Generate shiny Pokemon')
+    parser.add_argument('--pokedex', action='store_true',
+                        help='Fill Pokedex seen/caught flags for all 649 species')
+    parser.add_argument('--organize', action='store_true',
+                        help='Sort all Pokemon in boxes by National Dex #001-#649')
+    parser.add_argument('--no-backup', action='store_true',
+                        help='Skip creating backup file')
+
+    args = parser.parse_args()
+
+    save_path = args.save_path or os.path.expanduser(
+        "~/Emulator/Pokemon - Black Version (USA Europe) (NDSi Enhanced)"
+        "/Pokemon - Black Version (USA, Europe) (NDSi Enhanced).sav"
+    )
+
+    if not os.path.exists(save_path):
+        print(f"Save file not found: {save_path}")
+        return 1
+
+    print(f"Reading save file: {save_path}")
+    with open(save_path, 'rb') as f:
+        save_data = bytearray(f.read())
+
+    print(f"Save file size: {len(save_data)} bytes")
+
+    slot_offset = get_save_slot_offset(save_data)
+    print(f"Active save slot offset: 0x{slot_offset:05X}")
+
+    # Slot 2 (at 0x24000) is the active save slot for box data
+    # Slot 1 (slot_offset) is used for Pokedex
+    box_slot = 0x24000
+    box_base = box_slot + 0x400
+    print(f"Box data base offset (Slot 2): 0x{box_base:05X}")
+    print(f"Pokedex base offset (Slot 1):   0x{slot_offset + 0xD1B0:05X}")
+
+    any_injected = False
+
+    # Fill Pokedex if requested
+    if args.pokedex:
+        print("\n[Pokedex]")
+        fill_pokedex(save_data, slot_offset)
+        any_injected = True
+
+    # Build species list and inject
+    if args.all:
+        print("\n[All 649 Species mode]")
+        all_species = get_all_species_list()
+        shiny_label = " SHINY" if args.shiny else ""
+
+        # Someone's PC = boxes 1-8 (240 slots total)
+        # Species are already sorted: legendaries (lvl 40) > cool (lvl 40) > rest (lvl 20)
+        print(f"\n[Injecting{shiny_label} into Someone's PC (boxes 1-8, 240 slots)]")
+        injected = inject_pokemon(save_data, box_base, all_species, shiny=args.shiny, slot_range=(0, 240), force=True)
+        print(f"\n  Injected {injected} Pokemon into Someone's PC")
+        any_injected = True
+    elif not args.pokedex and not args.organize:
+        # Default mode: inject legendaries (only when no other flag is specified)
+        print("\n[Legendary-only mode]")
+        species_list = get_legendary_list()
+        shiny_label = " SHINY" if args.shiny else ""
+        print(f"Pokemon to inject: {len(species_list)}{shiny_label}")
+        print(f"\n[Injecting{shiny_label}]")
+        injected = inject_pokemon(save_data, box_base, species_list, shiny=args.shiny)
+        print(f"\n  Injected {injected}/{len(species_list)} Pokemon{shiny_label}")
+        any_injected = True
+
+    # Organize boxes if requested (sort all Pokemon by National Dex number)
+    if args.organize:
+        print(f"\n[Organizing Boxes]")
+        organized = organize_boxes(save_data, box_base)
+        any_injected = True
+
+    if not any_injected:
+        print("Nothing to do. Use --all, --pokedex, --organize, or run without flags for legendaries.")
+        return 0
+
+    # Update box checksums if any Pokemon were injected
+    if any_injected:
+        print(f"\n[Updating box checksums]")
+        update_box_checksums(save_data, box_base)
+        print(f"  Checksums updated for boxes 1-24")
+
     # Create backup
-    backup_path = save_path + ".bak"
-    if not os.path.exists(backup_path):
-        print(f"\nCreating backup at: {backup_path}")
-        with open(backup_path, 'wb') as f:
-            f.write(save_data)
-    
+    if not args.no_backup:
+        backup_path = save_path + ".bak"
+        if not os.path.exists(backup_path):
+            print(f"\nCreating backup at: {backup_path}")
+            with open(backup_path, 'wb') as f:
+                f.write(save_data)
+
     # Write save
+    print(f"\nWriting save file...")
     with open(save_path, 'wb') as f:
         f.write(save_data)
-    
-    print(f"\nDone! Injected {injected} Pokemon.")
-    print(f"Save file written to: {save_path}")
+
+    print(f"Done! Save file written to: {save_path}")
     return 0
 
+
 if __name__ == "__main__":
-    main()
+    sys.exit(main())

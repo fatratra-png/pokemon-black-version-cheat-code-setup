@@ -32,7 +32,7 @@ starters, Eeveelutions, and utility codes.
 
 ## Save Injector (`inject_legendaries.py`)
 
-> Populates PC boxes with real Pokemon (not just Pokedex flags).
+> Populates PC boxes with real Pokemon or sorts existing ones.
 
 | Flag | Effect |
 |------|--------|
@@ -40,6 +40,7 @@ starters, Eeveelutions, and utility codes.
 | `--all` | Injects **all 649 species** into PC boxes |
 | `--shiny` | All injected Pokemon are **shiny** (star sparkle) |
 | `--pokedex` | Also fills all Pokedex seen/caught flags |
+| `--organize` | **Sorts existing Pokemon** by National Dex #001-#649 across all boxes |
 
 **To fill your PC with all 649 shiny Pokemon and complete the Pokedex:**
 
@@ -47,11 +48,39 @@ starters, Eeveelutions, and utility codes.
 python inject_legendaries.py --all --shiny --pokedex
 ```
 
+**To sort already-caught Pokemon by dex number:**
+
+```bash
+python inject_legendaries.py --organize
+```
+
 The script auto-detects your save file at `~/Emulator/Pokemon - Black Version.../`. You can also pass a custom path:
 
 ```bash
 python inject_legendaries.py /path/to/your/save.sav --all --shiny --pokedex
+python inject_legendaries.py /path/to/your/save.sav --organize
 ```
+
+---
+
+## AR Box Generator (`generate_box_cheats.py`)
+
+> Generates a single Action Replay cheat that fills **all 24 PC boxes** with every Pokemon from #001 Bulbasaur to #649 Genesect in National Dex order.
+
+| Property | Value |
+|----------|-------|
+| **Cheat name** | `[Organize Boxes #001-#649 (L+R)]-` |
+| **Activation** | `L+R` at any PC in-game |
+| **Species** | 649 unique, no duplicates |
+| **Moves** | Predefined (78) + evolution-propagated (24) + type-based STAB (547) — **0 Struggle-only** |
+
+**Usage:**
+
+```bash
+python generate_box_cheats.py
+```
+
+This appends the cheat to your NooDS cheat file at `~/.var/app/com.hydra.noods/config/noods/cheats/`. The remaining 71 slots (boxes 23–24) are cleared to zero. Each Pokemon is level 100 and shiny.
 
 ## Encounter Codes (hold `SELECT` in grass)
 
